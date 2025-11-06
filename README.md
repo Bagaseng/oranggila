@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>QRIS Rp1 Converter</title>
-    <script src="https://unpkg.com/jsqr/dist/jsQR.js"></script>
+    <title>QRIS Manual Tool + CRC</title>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
     <style>
       :root {
@@ -12,9 +12,9 @@
         --blue-dark: #0d47a1;
       }
       body {
-        font-family: "Segoe UI", sans-serif;
         margin: 0;
-        background: linear-gradient(to bottom, var(--blue) 45%, #ffffff 45%);
+        font-family: "Segoe UI", sans-serif;
+        background: linear-gradient(to bottom, var(--blue) 45%, #fff 45%);
         color: #0d47a1;
         display: flex;
         flex-direction: column;
@@ -25,239 +25,188 @@
         color: white;
         font-weight: bold;
         font-size: 22px;
-        margin-top: 24px;
+        margin: 20px 0;
         text-align: center;
       }
       main {
         background: white;
         width: 90%;
         max-width: 420px;
-        margin-top: 40px;
         border-radius: 16px;
-        padding: 22px;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-        text-align: center;
+        padding: 20px;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
       }
-      input[type="file"],
-      button {
-        width: 100%;
-        border-radius: 10px;
-        padding: 14px;
-        font-weight: 600;
-        font-size: 15px;
-        margin-top: 10px;
+      section {
+        margin-bottom: 24px;
       }
       input[type="file"] {
-        border: 2px dashed var(--blue);
-        background: #e3f2fd;
-        color: var(--blue-dark);
+        display: block;
+        margin: 10px auto;
+      }
+      textarea {
+        width: 100%;
+        height: 100px;
+        border: 2px solid #bbdefb;
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 14px;
+        color: #0d47a1;
+        resize: none;
       }
       button {
+        display: block;
+        width: 100%;
+        border: none;
+        border-radius: 8px;
+        padding: 12px;
+        font-weight: bold;
+        margin-top: 10px;
         background: var(--blue);
         color: white;
-        border: none;
+        font-size: 15px;
       }
       button:hover {
         background: var(--blue-dark);
       }
       #status {
-        margin-top: 12px;
+        margin-top: 10px;
         font-weight: bold;
-        color: var(--blue-dark);
+        text-align: center;
       }
-      img,
-      canvas,
-      video {
-        margin-top: 14px;
-        max-width: 260px;
-        border-radius: 12px;
+      #preview {
+        text-align: center;
+        margin-top: 16px;
       }
-      video {
-        display: none;
-      }
-      footer {
-        margin-top: auto;
-        padding: 16px;
-        font-size: 13px;
-        color: #555;
+      hr {
+        border: none;
+        border-top: 1px solid #bbdefb;
+        margin: 24px 0;
       }
     </style>
   </head>
   <body>
-    <header>QRIS → Rp 1 Converter</header>
-
+    <header>QRIS Manual Tool</header>
     <main>
-      <input type="file" id="fileInput" accept="image/*" />
-      <button id="cameraBtn">📷 Buka Kamera</button>
-      <video id="video" autoplay playsinline></video>
-      <div id="status"></div>
-      <img id="imgPreview" style="display: none" alt="QR Asli" />
-      <canvas id="canvas" style="display: none"></canvas>
-      <div id="newQR"></div>
-      <button id="downloadBtn" style="display: none">⬇ Download QR Baru</button>
+      <section id="decodeSection">
+        <h3 style="text-align: center">📥 Upload Gambar QR</h3>
+        <input type="file" accept="image/*" id="fileInput" />
+        <div id="status"></div>
+        <textarea
+          id="decodedText"
+          placeholder="Hasil decode muncul otomatis..."
+          readonly
+        ></textarea>
+        <button id="copyBtn">📋 Copy Decode</button>
+      </section>
+
+      <hr />
+
+      <section id="generateSection">
+        <h3 style="text-align: center">🔲 Tempel & Buat QR</h3>
+        <textarea
+          id="qrisText"
+          placeholder="Tempel atau edit kode QRIS di sini..."
+        ></textarea>
+        <button id="crcBtn">🔧 Generate</button>
+        <button id="generateBtn">Buat QR dari Teks</button>
+        <div id="preview"></div>
+        <button id="downloadBtn" style="display: none">⬇ Download QR</button>
+      </section>
     </main>
 
-    <footer>Made for testing • Works offline</footer>
-
     <script>
-      const canvas = document.getElementById("canvas");
-      const ctx = canvas.getContext("2d");
-      let newCanvas = null,
-        stream = null,
-        scanInterval = null;
+      let currentCanvas = null;
 
-      // CRC16 CCITT-FALSE
+      // --- CRC16-CCITT (EMVCo Standard) ---
       function crc16ccitt(str) {
         let crc = 0xffff;
         for (let i = 0; i < str.length; i++) {
           crc ^= str.charCodeAt(i) << 8;
           for (let j = 0; j < 8; j++) {
-            crc = crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1;
+            if (crc & 0x8000) crc = (crc << 1) ^ 0x1021;
+            else crc <<= 1;
             crc &= 0xffff;
           }
         }
         return crc.toString(16).toUpperCase().padStart(4, "0");
       }
 
-      // Parse TLV
-      function parseTLV(data) {
-        let i = 0,
-          arr = [];
-        while (i < data.length - 4) {
-          let tag = data.substr(i, 2);
-          let len = parseInt(data.substr(i + 2, 2));
-          let val = data.substr(i + 4, len);
-          arr.push({ tag, len, val });
-          i += 4 + len;
-          if (tag === "63") break;
-        }
-        return arr;
-      }
-      function buildTLV(arr) {
-        let s = "";
-        for (let t of arr) {
-          if (t.tag === "63") continue;
-          const len = t.val.length.toString().padStart(2, "0");
-          s += t.tag + len + t.val;
-        }
-        return s;
-      }
-      function setAmountTo1(payload) {
-        let tlv = parseTLV(payload);
-        let found = false;
-        for (let t of tlv) {
-          if (t.tag === "54") {
-            t.val = "1";
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          const idx = tlv.findIndex((x) => x.tag === "58");
-          tlv.splice(idx, 0, { tag: "54", len: 1, val: "1" });
-        }
-        const base = buildTLV(tlv) + "6304";
-        const crc = crc16ccitt(base);
-        return base + crc;
-      }
-
-      function processQR(payload) {
-        const newPayload = setAmountTo1(payload);
-        document.getElementById("status").innerText =
-          "✅ Nominal diubah ke Rp 1";
-        const container = document.getElementById("newQR");
-        container.innerHTML = "";
-        QRCode.toCanvas(newPayload, { width: 260 }, (err, canvas2) => {
-          if (err) {
-            document.getElementById("status").innerText =
-              "⚠️ Gagal membuat QR baru!";
-            return;
-          }
-          container.appendChild(canvas2);
-          newCanvas = canvas2;
-          document.getElementById("downloadBtn").style.display = "inline-block";
-        });
-      }
-
-      document.getElementById("fileInput").addEventListener("change", (ev) => {
-        const file = ev.target.files[0];
+      // --- Decode otomatis setelah upload ---
+      document.getElementById("fileInput").addEventListener("change", (e) => {
+        const file = e.target.files[0];
         if (!file) return;
-        document.getElementById("status").innerText = "⏳ Membaca QR...";
-        const img = new Image();
-        const url = URL.createObjectURL(file);
-        img.onload = () => {
-          canvas.width = img.width;
-          canvas.height = img.height;
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const code = jsQR(imageData.data, imageData.width, imageData.height);
-          if (!code) {
-            document.getElementById("status").innerText =
-              "❌ Gagal membaca QR!";
-            return;
-          }
-          processQR(code.data.trim());
-          document.getElementById("imgPreview").src = url;
-          document.getElementById("imgPreview").style.display = "block";
-          URL.revokeObjectURL(url);
-        };
-        img.src = url;
-      });
-
-      // Kamera
-      const video = document.getElementById("video");
-      const cameraBtn = document.getElementById("cameraBtn");
-      cameraBtn.addEventListener("click", async () => {
-        if (stream) {
-          // Stop kamera
-          stream.getTracks().forEach((t) => t.stop());
-          stream = null;
-          video.style.display = "none";
-          cameraBtn.textContent = "📷 Buka Kamera";
-          clearInterval(scanInterval);
-          return;
-        }
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: "environment" },
-          });
-          video.srcObject = stream;
-          video.style.display = "block";
-          cameraBtn.textContent = "❌ Tutup Kamera";
-          document.getElementById("status").innerText = "📸 Arahkan ke QR...";
-          scanInterval = setInterval(() => {
-            if (video.readyState === video.HAVE_ENOUGH_DATA) {
-              canvas.width = video.videoWidth;
-              canvas.height = video.videoHeight;
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              const imgData = ctx.getImageData(
-                0,
-                0,
-                canvas.width,
-                canvas.height
-              );
-              const code = jsQR(imgData.data, imgData.width, imgData.height);
-              if (code) {
-                processQR(code.data.trim());
-                document.getElementById("status").innerText =
-                  "✅ QR berhasil dibaca!";
-                stream.getTracks().forEach((t) => t.stop());
-                video.style.display = "none";
-                cameraBtn.textContent = "📷 Buka Kamera";
-                clearInterval(scanInterval);
-              }
+        const reader = new FileReader();
+        reader.onload = function (ev) {
+          const img = new Image();
+          img.onload = function () {
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+            const imageData = ctx.getImageData(
+              0,
+              0,
+              canvas.width,
+              canvas.height
+            );
+            const code = jsQR(imageData.data, canvas.width, canvas.height);
+            if (code) {
+              document.getElementById("decodedText").value = code.data;
+              document.getElementById("status").innerText =
+                "✅ QR berhasil didecode otomatis!";
+            } else {
+              document.getElementById("status").innerText =
+                "❌ Gagal membaca QR!";
             }
-          }, 500);
-        } catch (e) {
-          alert("Kamera tidak bisa diakses!");
-        }
+          };
+          img.src = ev.target.result;
+        };
+        reader.readAsDataURL(file);
       });
 
+      // --- Copy hasil decode ---
+      document.getElementById("copyBtn").addEventListener("click", () => {
+        const text = document.getElementById("decodedText").value;
+        if (!text) return alert("Belum ada teks untuk disalin!");
+        navigator.clipboard.writeText(text);
+        alert("✅ Teks QR berhasil disalin!");
+      });
+
+      // --- Generate CRC valid EMVCo ---
+      document.getElementById("crcBtn").addEventListener("click", () => {
+        let text = document.getElementById("qrisText").value.trim();
+        if (!text)
+          return alert("Masukkan atau tempel teks QR terlebih dahulu!");
+        if (!text.includes("6304"))
+          return alert("Format tidak valid: tag 6304 tidak ditemukan!");
+        const base = text.substring(0, text.indexOf("6304") + 4);
+        const crc = crc16ccitt(base);
+        const valid = base + crc;
+        document.getElementById("qrisText").value = valid;
+        alert("✅ CRC diperbarui: " + crc);
+      });
+
+      // --- Generate QR dari teks ---
+      document.getElementById("generateBtn").addEventListener("click", () => {
+        const text = document.getElementById("qrisText").value.trim();
+        if (!text) return alert("Tempel teks QR dulu!");
+        const preview = document.getElementById("preview");
+        preview.innerHTML = "";
+        QRCode.toCanvas(text, { width: 260 }, (err, canvas) => {
+          if (err) return alert("Gagal membuat QR!");
+          preview.appendChild(canvas);
+          currentCanvas = canvas;
+          document.getElementById("downloadBtn").style.display = "block";
+        });
+      });
+
+      // --- Download QR ---
       document.getElementById("downloadBtn").addEventListener("click", () => {
-        if (!newCanvas) return;
+        if (!currentCanvas) return;
         const link = document.createElement("a");
-        link.download = "QRIS_1Rupiah.png";
-        link.href = newCanvas.toDataURL("image/png");
+        link.download = "QR_Generated.png";
+        link.href = currentCanvas.toDataURL("image/png");
         link.click();
       });
     </script>
